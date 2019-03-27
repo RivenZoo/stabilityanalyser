@@ -226,7 +226,7 @@ func outputOrdered(m map[string]*moduleDepStat, args analyseArgs) {
 		return
 	}
 	sortBy.Sort(depsStat)
-	if args.limit > 0 {
+	if args.limit > 0 && args.limit < len(depsStat) {
 		depsStat = depsStat[:args.limit]
 	}
 	encoder := json.NewEncoder(os.Stdout)
