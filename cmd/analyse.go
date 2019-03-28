@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"github.com/RivenZoo/backbone/logger"
 	"github.com/spf13/cobra"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -34,8 +35,9 @@ const (
 var analyseParam analyseArgs
 
 type analyseArgs struct {
-	orderBy string
-	limit   int
+	orderBy         string
+	limit           int
+	isOutputDigraph bool
 }
 
 // analyseCmd represents the analyse command
@@ -54,6 +56,7 @@ func init() {
 
 	analyseCmd.Flags().StringVar(&analyseParam.orderBy, "order", "", "order by [fan-in | fan-out | volatile]")
 	analyseCmd.Flags().IntVar(&analyseParam.limit, "limit", 0, "limit output, order should be set. default no limit")
+	analyseCmd.Flags().BoolVar(&analyseParam.isOutputDigraph, "digraph", false, "output digraph or not")
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
@@ -186,24 +189,15 @@ func updateModuleDep(m map[string]*moduleDepStat, src, dst string) {
 }
 
 func outputModuleDepStat(m map[string]*moduleDepStat, args analyseArgs) {
-	switch args.orderBy {
-	case orderByFanIn, orderByFanOut, orderByVolatile:
-		outputOrdered(m, args)
-	default:
-		outputJSON(m)
+	deps := flattenModuleDep(m, args)
+	if args.isOutputDigraph {
+		outputDigraph(deps)
+	} else {
+		outputJSON(deps)
 	}
 }
 
-func outputJSON(m map[string]*moduleDepStat) {
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		logger.Errorf("output error %v", err)
-		return
-	}
-	os.Stdout.Write(b)
-}
-
-func outputOrdered(m map[string]*moduleDepStat, args analyseArgs) {
+func flattenModuleDep(m map[string]*moduleDepStat, args analyseArgs) []*moduleDepStat {
 	depsStat := make([]*moduleDepStat, 0, len(m))
 	for _, st := range m {
 		depsStat = append(depsStat, st)
@@ -223,13 +217,55 @@ func outputOrdered(m map[string]*moduleDepStat, args analyseArgs) {
 			return s1.I >= s2.I
 		})
 	default:
-		return
+		return depsStat
 	}
 	sortBy.Sort(depsStat)
 	if args.limit > 0 && args.limit < len(depsStat) {
 		depsStat = depsStat[:args.limit]
 	}
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	encoder.Encode(depsStat)
+	return depsStat
+}
+
+func outputJSON(deps []*moduleDepStat) {
+	b, err := json.MarshalIndent(deps, "", "  ")
+	if err != nil {
+		logger.Errorf("output error %v", err)
+		return
+	}
+	os.Stdout.Write(b)
+}
+
+func outputDigraph(deps []*moduleDepStat) {
+	w := os.Stdout
+	writeDigraphHead(w)
+	for i := range deps {
+		writeDigraphNodeDeps(w, deps[i])
+	}
+	writeDigraphTail(w)
+}
+
+func writeDigraphHead(w io.Writer) {
+	w.Write([]byte(`digraph godep {
+splines=ortho
+nodesep=0.4
+ranksep=0.8
+node [shape="box",style="rounded,filled"]
+edge [arrowsize="0.5"]
+`))
+}
+
+func writeDigraphTail(w io.Writer) {
+	w.Write([]byte("}"))
+}
+
+func writeDigraphNodeDeps(w io.Writer, st *moduleDepStat) {
+	bw := bufio.NewWriter(w)
+	bw.WriteString(fmt.Sprintf(`"%[1]s" [label="%[1]s %[2]*.*f" color="paleturquoise" `+
+		`URL="https://gitlab.liebaopay.com/devx-games/funnygame/tree/master/src/%[1]s" target="_blank"];`+"\n",
+		st.Module, 1, 3, st.I))
+	for i := range st.FanOut {
+		bw.WriteString(fmt.Sprintf(`"%[1]s" -> "%[2]s";`+"\n",
+			st.Module, st.FanOut[i]))
+	}
+	bw.Flush()
 }
